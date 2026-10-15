@@ -6,7 +6,7 @@ const cors = require('cors');
 const axios = require('axios');
 const https = require('https');
 const { StringDecoder } = require('string_decoder');
-const { timingSafeEqual } = require('crypto');
+const { timingSafeEqual, createHash } = require('crypto');
 const { SHOW_REASONING, getReasoningPayload, resolveEffectiveThinking, StreamNormalizer, normalizeNonStreamChoice } = require('./reasoning');
 const { extractLeakedToolCalls, ToolCallStreamRecovery } = require('./tools');
 
@@ -87,8 +87,12 @@ const MODEL_MAPPING = {
   'google-lightest': 'meta/muse-glimmer-30b', // was google/gemma-2b
   'google-lighter': 'poolside/laguna-xs-2.1', // was google/gemma-3-4b-it
   'glm-5.3': 'z-ai/glm-5.3',
-  'glm-5.3-flash': 'z-ai/glm-5.3-flash'
+  'glm-5.3-flash': 'z-ai/glm-5.3-flash',
+  'nemotron-vl': 'nvidia/nemotron-3.5-super-vl-120b-a12b', // multimodal (image/video) 120B-A12B
+  'step-5': 'stepfun-ai/step-5-preview'
 };
+
+const RAW_MODEL_ID_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.:-]+$/;
 
 // Used when an unrecognized alias is requested. Must point at a live model.
 const DEFAULT_MODEL = 'google/gemma-4-31b-it';
@@ -123,19 +127,20 @@ function extractBearerToken(authHeader) {
   return token || null;
 }
 
+// Hash both sides first so the comparison is constant-time AND doesn't leak the key length.
 function safeTimingEqual(a, b) {
-  if (!a || !b || a.length !== b.length) return false;
-  try {
-    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
-  } catch {
-    return false;
-  }
+  if (!a || !b) return false;
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
 }
 
 app.use((req, res, next) => {
-  if (req.path === '/health' || req.path === '/v1/models' || req.path === '/') {
-    return next();
-  }
+  const isPublic =
+    req.path === '/health' ||
+    req.path === '/' ||
+    (req.path === '/v1/models' && req.query.live !== 'true'); // live check calls NIM, so it needs auth
+  if (isPublic) return next();
 
   const token = extractBearerToken(req.headers.authorization);
   if (!token || !CLIENT_AUTH_KEY) {
@@ -377,7 +382,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '2.6.0' });
+  res.json({ status: 'ok', version: require('./package.json').version });
 });
 
 app.get('/v1/models', async (req, res) => {
@@ -433,6 +438,11 @@ app.post('/v1/chat/completions', async (req, res) => {
     const { model, max_tokens, temperature, stream, reasoning_effort } = req.body;
 
     let primaryModel = MODEL_MAPPING[model];
+    // Raw NIM IDs ("vendor/model-name") pass straight through, so new catalog
+    // models work without a code change.
+    if (!primaryModel && typeof model === 'string' && RAW_MODEL_ID_RE.test(model)) {
+      primaryModel = model;
+    }
     if (!primaryModel) {
       console.warn(`[PROXY] Unknown model alias "${model}", falling back to default: ${DEFAULT_MODEL}`);
       primaryModel = DEFAULT_MODEL;
@@ -484,7 +494,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         if (upstreamStream) {
           upstreamStream.removeAllListeners();
         }
-        req.removeAllListeners('close');
+        res.removeAllListeners('close');
       };
 
       const processLine = (line) => {
@@ -664,8 +674,9 @@ app.post('/v1/chat/completions', async (req, res) => {
         cleanup();
       });
 
-      req.on('close', () => {
-        const clientGone = req.destroyed || !res.writable;
+      // res 'close' = real client disconnect; req 'close' fires as soon as the body is read.
+      res.on('close', () => {
+        const clientGone = !res.writableFinished;
         if (!streamEndedCleanly && clientGone) {
           console.warn('[STREAM] Client disconnected prematurely');
         }
