@@ -156,8 +156,10 @@ const REASONING_EFFORT_ENUMS = {
   'openai/gpt-oss-120b': ['low', 'medium', 'high'],
   'openai/gpt-oss-20b': ['low', 'medium', 'high'],
   'deepseek-ai/deepseek-v4-flash-0731': ['low', 'high', 'max'],
+  'deepseek-ai/deepseek-v4.1-flash': ['low', 'high', 'max'],
   'deepseek-ai/deepseek-v4-pro-0813': ['low', 'high', 'max'],
   'nvidia/nemotron-3-super-120b-a12b': ['low'],
+  'nvidia/nemotron-3.5-super-vl-120b-a12b': ['low'],
   'nvidia/nemotron-3-ultra-550b-a55b': ['low'],
   'minimaxai/minimax-m3': ['adaptive'],
   'moonshotai/kimi-k3': ['low', 'high', 'max'],
@@ -199,7 +201,8 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
   const effort = validReasoningEffort(model, rawEffort);
 
   switch (model) {
-    case 'nvidia/nemotron-3-super-120b-a12b': {
+    case 'nvidia/nemotron-3-super-120b-a12b':
+    case 'nvidia/nemotron-3.5-super-vl-120b-a12b': { // VL toggles unverified; assumed same as Super
       if (!enableThinking) return {};
       const payload = { chat_template_kwargs: { enable_thinking: true } };
       if (effort === 'low') payload.chat_template_kwargs.low_effort = true;
@@ -220,6 +223,7 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
     }
 
     case 'deepseek-ai/deepseek-v4-flash-0731':
+    case 'deepseek-ai/deepseek-v4.1-flash':
     case 'deepseek-ai/deepseek-v4-pro-0813': {
       if (!enableThinking) {
         return { chat_template_kwargs: { thinking: false } };
@@ -262,6 +266,9 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
         : (enableThinking ? 'enabled' : 'disabled');
       return { chat_template_kwargs: { thinking_mode: thinkingMode } };
     }
+
+    // stepfun-ai/step-5-preview: no documented NIM reasoning toggle yet.
+    // Falls through to default (no extra params).
 
     case 'moonshotai/kimi-k3': {
       // No off-switch — omitting the field falls back to Kimi's own 'max'.
