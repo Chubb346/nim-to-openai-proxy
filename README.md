@@ -48,6 +48,12 @@ Node.js 24+, a NVAPI/Nim API key, a deployment platform (though if you follow th
 | `google-lighter` | `poolside/laguna-xs-2.1` | Coding | Fast | Unknown (to me) |
 | `google-lightest` | `meta/muse-glimmer-30b` | Coding & Agentic work | Fast | Unknown (to me) |
 | `m3` | `minimaxai/minimax-m3` | Experimental | Medium-High | Unknown (to me) |
+| `nemotron-vl` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | Vision + text, agents, documents | Fast | Low |
+| `step-5` | `stepfun-ai/step-5-preview` | Agentic work, coding, long context | Medium | Unknown (to me) |
+| `glm-5.3` | `z-ai/glm-5.3` | General purpose | Medium | Unknown (to me) |
+| `glm-5.3-flash` | `z-ai/glm-5.3-flash` | Fast general purpose | Fast | Unknown (to me) |
+
+You can also pass any raw NIM model ID (e.g. `stepfun-ai/step-5-preview`) as the `model` field and the proxy will forward it as-is.
 
 ### Filter Guide
 
@@ -61,14 +67,9 @@ Node.js 24+, a NVAPI/Nim API key, a deployment platform (though if you follow th
 
 ### Fallback Chain
 
-If your requested model fails, the proxy automatically tries:
-1. Requested model
-2. `google/gemma-4-31b-it`
-3. `google/diffusiongemma-26b-a4b-it`
-4. `mistralai/mistral-nemotron`
-5. `nvidia/nemotron-3-super-120b-a12b`
+No fallback models are used. `FALLBACK_MODELS` in `server.js` is empty, so each request goes only to the model you asked for. If that model fails, the error is returned to your client as-is.
 
-All fallbacks are non-Chinese-hosted to avoid filter interruption mid-scene. These can be changed, but i found that these four work best as fallbacks.
+You can add fallbacks by listing backend model IDs in `FALLBACK_MODELS`. They are tried in order after the requested model. Keep in mind that every failing model in the list adds its full timeout before the next one is tried.
 
 ### Auth Guide
 I added auth middleware that wasn't present in the code I built upon. It uses an env var in your deployment. Use any secure string of 32+ characters, or generate one by hashing your NVAPI key. I recommend using an online hash tool or command to make a hash of your NVAPI key since the key is already complex as is, and a hash makes it more secure as it cannot be realistically reversed back to the NVAPI key. The first 32 characters of the hash are enough.
