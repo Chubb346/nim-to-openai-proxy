@@ -17,7 +17,8 @@ if (SHOW_REASONING) console.log('[CONFIG] Reasoning display: ENABLED');
 // Models that embed reasoning inline in `content` via delimiter tags instead
 // of a structured field.
 const CONTENT_DELIMITER_TAGS = {
-  'minimaxai/minimax-m3': ['<mm:think>', '</mm:think>']
+  'minimaxai/minimax-m3': ['<mm:think>', '</mm:think>'],
+  'minimaxai/minimax-m3.1-flash': ['<mm:think>', '</mm:think>'] // assumed same as M3
 };
 
 // Stateful parser for extracting reasoning blocks across streamed chunks.
@@ -162,6 +163,7 @@ const REASONING_EFFORT_ENUMS = {
   'nvidia/nemotron-3.5-super-vl-120b-a12b': ['low'],
   'nvidia/nemotron-3-ultra-550b-a55b': ['low'],
   'minimaxai/minimax-m3': ['adaptive'],
+  'minimaxai/minimax-m3.1-flash': ['adaptive'],
   'moonshotai/kimi-k3': ['low', 'high', 'max'],
   'meta/muse-glimmer-30b': ['none', 'minimal', 'low', 'medium', 'high', 'max']
 };
@@ -260,7 +262,8 @@ function getReasoningPayload(model, enableThinking, clientReasoningEffort, hasTo
     // endpoint (model, messages, temperature, top_p, max_tokens, stream
     // only). Falls through to default.
 
-    case 'minimaxai/minimax-m3': {
+    case 'minimaxai/minimax-m3':
+    case 'minimaxai/minimax-m3.1-flash': { // 3.1-flash params assumed same as M3 (unverified)
       const thinkingMode = effort === 'adaptive'
         ? 'adaptive'
         : (enableThinking ? 'enabled' : 'disabled');
