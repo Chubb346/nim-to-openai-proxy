@@ -50,6 +50,7 @@ Node.js 24+, a NVAPI/Nim API key, a deployment platform (though if you follow th
 | `m3` | `minimaxai/minimax-m3` | Experimental | Medium-High | Unknown (to me) |
 | `nemotron-vl` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | Vision + text, agents, documents | Fast | Low |
 | `step-5` | `stepfun-ai/step-5-preview` | Agentic work, coding, long context | Medium | Unknown (to me) |
+| `m3.1-flash` | `minimaxai/minimax-m3.1-flash` | Coding, agents, vision, 1M context | Fast | Unknown (to me) |
 | `glm-5.3` | `z-ai/glm-5.3` | General purpose | Medium | Unknown (to me) |
 | `glm-5.3-flash` | `z-ai/glm-5.3-flash` | Fast general purpose | Fast | Unknown (to me) |
 
