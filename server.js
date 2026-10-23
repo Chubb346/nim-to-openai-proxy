@@ -548,4 +548,248 @@ app.post('/v1/chat/completions', async (req, res) => {
             delta.content = clientContent;
 
             if (SHOW_REASONING && normalizedDelta.reasoning) {
-              delta.reasoning = normalizedD
+              delta.reasoning = normalizedDelta.reasoning;
+              delta.reasoning_content = normalizedDelta.reasoning;
+            } else {
+              delete delta.reasoning;
+              delete delta.reasoning_content;
+            }
+          }
+
+          safeWrite(res, `data: ${JSON.stringify(data)}\n\n`);
+        } catch {
+          console.warn('[STREAM] Invalid JSON line:', line.slice(0, 100));
+          safeWrite(res, `data: ${JSON.stringify({
+            error: {
+              message: 'Upstream sent malformed chunk',
+              type: 'stream_parse_error',
+              details: line.slice(0, 100)
+            }
+          })}\n\n`);
+        }
+      };
+
+      upstreamStream.on('data', chunk => {
+        buffer += decoder.write(chunk);
+
+        if (buffer.length > MAX_BUFFER_SIZE) {
+          console.error('[STREAM] Buffer overflow, destroying connection');
+          safeWrite(res, `data: ${JSON.stringify({
+            error: {
+              message: 'Stream buffer overflow',
+              type: 'stream_error'
+            }
+          })}\n\n`);
+          safeWrite(res, 'data: [DONE]\n\n');
+          res.end();
+          upstreamStream.destroy();
+          cleanup();
+          return;
+        }
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          processLine(line);
+        }
+      });
+
+      upstreamStream.on('end', () => {
+        buffer += decoder.end();
+        if (buffer.trim()) {
+          for (const line of buffer.split('\n')) {
+            processLine(line);
+          }
+        }
+
+        const flushedDelta = normalizer.flush();
+
+        const toolRecoveryLeftover = toolRecovery.flush();
+        if (toolRecoveryLeftover) {
+          console.warn('[TOOL_CALL_RECOVERY] Stream ended mid <tool_call> tag; flushing raw text instead of dropping it.');
+          flushedDelta.content = (flushedDelta.content || '') + toolRecoveryLeftover;
+        }
+
+        if (flushedDelta.content || flushedDelta.reasoning) {
+          let clientContent = '';
+
+          if (SHOW_REASONING && inlineReasoning) {
+            if (flushedDelta.reasoning && !reasoningOpen) {
+              clientContent += `<thinking>\n${flushedDelta.reasoning}`;
+              reasoningOpen = true;
+            } else if (flushedDelta.reasoning) {
+              clientContent += flushedDelta.reasoning;
+            }
+
+            if (flushedDelta.content && reasoningOpen) {
+              clientContent += `\n</thinking>\n\n${flushedDelta.content}`;
+              reasoningOpen = false;
+            } else if (flushedDelta.content) {
+              clientContent += flushedDelta.content;
+            }
+          } else {
+            clientContent = flushedDelta.content || '';
+          }
+
+          const finalChunk = { choices: [{ delta: {} }] };
+          if (clientContent) finalChunk.choices[0].delta.content = clientContent;
+
+          if (SHOW_REASONING && !inlineReasoning && flushedDelta.reasoning) {
+            finalChunk.choices[0].delta.reasoning = flushedDelta.reasoning;
+            finalChunk.choices[0].delta.reasoning_content = flushedDelta.reasoning;
+          }
+
+          if (Object.keys(finalChunk.choices[0].delta).length > 0) {
+            safeWrite(res, `data: ${JSON.stringify(finalChunk)}\n\n`);
+          }
+        }
+
+        // Close an inline <thinking> tag left open if the model was cut off mid-reasoning.
+        if (SHOW_REASONING && inlineReasoning && reasoningOpen) {
+          safeWrite(res, `data: ${JSON.stringify({ choices: [{ delta: { content: '\n</thinking>\n' } }] })}\n\n`);
+          reasoningOpen = false;
+        }
+
+        if (!doneSent) {
+          safeWrite(res, 'data: [DONE]\n\n');
+        }
+        streamEndedCleanly = true;
+        if (!res.writableEnded) {
+          res.end();
+        }
+        cleanup();
+      });
+
+      upstreamStream.on('error', err => {
+        console.error('[STREAM] Upstream error:', err.message);
+        if (!res.writableEnded) {
+          safeWrite(res, `data: ${JSON.stringify({
+            error: {
+              message: 'Stream interrupted by upstream error',
+              type: 'stream_error'
+            }
+          })}\n\n`);
+          safeWrite(res, 'data: [DONE]\n\n');
+          res.end();
+        }
+        cleanup();
+      });
+
+      // res 'close' = real client disconnect; req 'close' fires as soon as the body is read.
+      res.on('close', () => {
+        const clientGone = !res.writableFinished;
+        if (!streamEndedCleanly && clientGone) {
+          console.warn('[STREAM] Client disconnected prematurely');
+        }
+        if (upstreamStream && !upstreamStream.destroyed && !streamEndedCleanly) {
+          upstreamStream.destroy();
+        }
+        cleanup();
+      });
+    } else {
+      const openaiResponse = {
+        id: `chatcmpl-${Date.now()}`,
+        object: 'chat.completion',
+        model: usedModel, // actual model that answered, may differ from the requested alias
+        created: Math.floor(Date.now() / 1000),
+        choices: (response.data.choices || []).map((choice, i) => {
+          const normalizedChoice = normalizeNonStreamChoice(choice, usedModel);
+          let content = normalizedChoice.message?.content || '';
+          const reasoning = normalizedChoice.message?.reasoning || '';
+
+          const { content: cleanedContent, toolCalls: recoveredToolCalls } = extractLeakedToolCalls(content);
+          content = cleanedContent;
+
+          if (SHOW_REASONING && inlineReasoning && reasoning) {
+            content = `<thinking>\n${reasoning}\n</thinking>\n\n${content}`;
+          }
+
+          const finalMessage = { ...normalizedChoice.message, content };
+
+          if (recoveredToolCalls.length > 0) {
+            finalMessage.tool_calls = [
+              ...(normalizedChoice.message?.tool_calls || []),
+              ...recoveredToolCalls
+            ];
+            // null content on tool-call turns matches real OpenAI responses
+            if (!finalMessage.content || !finalMessage.content.trim()) {
+              finalMessage.content = null;
+            }
+          }
+
+          if (SHOW_REASONING && reasoning) {
+            finalMessage.reasoning = reasoning;
+            finalMessage.reasoning_content = reasoning;
+          } else {
+            delete finalMessage.reasoning;
+            delete finalMessage.reasoning_content;
+          }
+
+          const finalChoice = {
+            ...normalizedChoice,
+            index: i,
+            message: finalMessage,
+            ...(recoveredToolCalls.length > 0 && { finish_reason: 'tool_calls' })
+          };
+          return finalChoice;
+        }),
+        usage: response.data.usage || {
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0
+        }
+      };
+
+      res.json(openaiResponse);
+    }
+  } catch (error) {
+    console.error('[PROXY] Fatal error:', error.message);
+    console.error('[PROXY] NIM response:', error.response?.data);
+
+    if (!res.headersSent) {
+      // Express only sets Content-Type if unset; force JSON in case the
+      // streaming branch already set text/event-stream before failing.
+      res.set('Content-Type', 'application/json');
+      res.status(error.response?.status || 500).json({
+        error: {
+          message: error.message,
+          type: 'invalid_request_error',
+          code: error.response?.status || 500
+        }
+      });
+    } else if (!res.writableEnded) {
+      safeWrite(res, `data: ${JSON.stringify({
+        error: {
+          message: error.message,
+          type: 'proxy_error'
+        }
+      })}\n\n`);
+      safeWrite(res, 'data: [DONE]\n\n');
+      res.end();
+    }
+
+    if (upstreamStream && !upstreamStream.destroyed) {
+      upstreamStream.destroy();
+    }
+  }
+});
+
+app.use((req, res) => {
+  res.status(404).json({
+    error: {
+      message: `Endpoint ${req.method} ${req.path} not found`,
+      type: 'invalid_request_error',
+      code: 404
+    }
+  });
+});
+
+// ─── Startup ──────────────────────────────────────────────────────────────
+
+app.listen(PORT, () => {
+  console.log(`[PROXY] Hybrid proxy running on port ${PORT}`);
+  console.log(`[PROXY] Max tokens limit: ${MAX_TOKENS_LIMIT}`);
+  validateModels().catch(err => {
+    console.error('[VALIDATION] Startup check failed:', err.message);
+  });
+});
